@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SomaPerf 本地测试页</title>
+  <script src="../sdk/soma-perf.js"></script>
+  <script>
+    window.SomaPerf.init({
+      endpoint: "http://127.0.0.1:8000/collect",
+      siteId: "somaagent-test",
+      debug: true
+    });
+  </script>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 40px; line-height: 1.8; }
+    button { padding: 10px 24px; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <h1>SomaPerf 本地测试页</h1>
+  <p>打开控制台查看上报日志，点击下面的按钮后到采集服务的 <code>/api/recent</code> 查看事件。</p>
+  <button data-event="test-click" onclick="document.getElementById('out').textContent='已点击，事件已上报'">点我一下</button>
+  <p id="out"></p>
+  <p>如果页面加载失败或看不到日志，先确认采集服务已启动：<code>cd server && uvicorn collect:app --host 127.0.0.1 --port 8000</code></p>
+</body>
+</html>
