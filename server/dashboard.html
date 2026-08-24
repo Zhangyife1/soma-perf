@@ -107,6 +107,28 @@
   .tag.error { background: rgba(239,68,68,0.15); color: #ff8a8a; }
   .tag.heartbeat { background: rgba(245,158,11,0.14); color: #ffc46b; }
   .empty { color: var(--muted); text-align: center; padding: 40px 0; font-size: 14px; }
+  .login-overlay {
+    position: fixed; inset: 0; z-index: 50; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(6,10,20,0.9); backdrop-filter: blur(4px);
+  }
+  .login-overlay.show { display: flex; }
+  .login-box {
+    background: var(--panel); border: 1px solid var(--rule); border-radius: 16px;
+    padding: 32px; width: 320px; text-align: center;
+  }
+  .login-box h2 { font-size: 18px; margin-bottom: 8px; }
+  .login-box p { font-size: 13px; color: var(--muted); }
+  .login-box input {
+    width: 100%; padding: 10px 12px; margin: 16px 0 12px; border-radius: 8px;
+    border: 1px solid var(--rule); background: var(--panel2); color: var(--ink); font-size: 14px;
+  }
+  .login-box button {
+    width: 100%; padding: 10px; border: none; border-radius: 8px; cursor: pointer;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: var(--bg); font-weight: 600; font-size: 14px;
+  }
+  .login-err { color: var(--red); font-size: 12px; margin-top: 10px; min-height: 16px; }
   footer { margin-top: 20px; text-align: center; font-size: 12px; color: var(--muted); }
   @media (max-width: 900px) {
     .grid { grid-template-columns: 1fr; }
@@ -115,6 +137,15 @@
 </style>
 </head>
 <body>
+<div class="login-overlay" id="loginOverlay">
+  <div class="login-box">
+    <h2>SomaPerf 看板</h2>
+    <p>请输入访问密码</p>
+    <input type="password" id="dashPass" placeholder="访问密码" autocomplete="current-password">
+    <button onclick="doLogin()">进入看板</button>
+    <div class="login-err" id="loginErr"></div>
+  </div>
+</div>
 <div class="bg-grid"></div>
 <div class="bg-glow"></div>
 <div class="container">
@@ -177,9 +208,33 @@ function fmtTime(ts) {
   var d = new Date(ts);
   return d.toLocaleString('zh-CN', { hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
+function prettyPage(p) {
+  if (!p) return '-';
+  try { return decodeURIComponent(p); } catch (e) { return p; }
+}
 function typeTag(t) {
   var map = { click: 'click', page_exit: 'exit', js_error: 'error', resource_error: 'error', heartbeat: 'heartbeat' };
   return '<span class="tag ' + (map[t] || '') + '">' + esc(t) + '</span>';
+}
+function getToken() {
+  try { return sessionStorage.getItem('soma_dash_token') || ''; } catch (e) { return ''; }
+}
+function setToken(t) {
+  try { sessionStorage.setItem('soma_dash_token', t); } catch (e) {}
+}
+function showLogin(msg) {
+  document.getElementById('loginOverlay').classList.add('show');
+  if (msg) document.getElementById('loginErr').textContent = msg;
+}
+function hideLogin() {
+  document.getElementById('loginOverlay').classList.remove('show');
+}
+function doLogin() {
+  var t = document.getElementById('dashPass').value.trim();
+  if (!t) return;
+  setToken(t);
+  document.getElementById('loginErr').textContent = '';
+  load();
 }
 
 function chart(id) {
@@ -288,7 +343,7 @@ function renderPages(pages) {
   var html = '<table><thead><tr><th>页面</th><th>PV</th><th>UV</th><th>占比</th></tr></thead><tbody>';
   var total = pages.reduce(function (s, p) { return s + p.pv; }, 0);
   pages.forEach(function (p) {
-    html += '<tr><td>' + esc(p.page) + '</td><td>' + num(p.pv) + '</td><td>' + num(p.uv) + '</td><td>' + pct(p.pv / total) + '</td></tr>';
+    html += '<tr><td>' + esc(prettyPage(p.page)) + '</td><td>' + num(p.pv) + '</td><td>' + num(p.uv) + '</td><td>' + pct(p.pv / total) + '</td></tr>';
   });
   box.innerHTML = html + '</tbody></table>';
 }
@@ -299,7 +354,7 @@ function renderRecent(rows) {
   var html = '<table><thead><tr><th>时间</th><th>类型</th><th>访客</th><th>页面</th><th>设备/系统/浏览器</th><th>Bot 分</th></tr></thead><tbody>';
   rows.forEach(function (r) {
     html += '<tr><td>' + esc(fmtTime(r.ts)) + '</td><td>' + typeTag(r.event_type) + '</td>' +
-            '<td>' + esc(r.visitor_id || '-') + '</td><td>' + esc(r.page || '-') + '</td>' +
+            '<td>' + esc(r.visitor_id || '-') + '</td><td>' + esc(prettyPage(r.page)) + '</td>' +
             '<td>' + esc([r.device, r.os, r.browser].filter(Boolean).join(' / ') || '-') + '</td>' +
             '<td>' + (r.bot_score == null ? '-' : r.bot_score + (r.is_bot ? ' (Bot)' : '')) + '</td></tr>';
   });
@@ -307,6 +362,7 @@ function renderRecent(rows) {
 }
 
 function render(data) {
+  hideLogin();
   renderCards(data.totals);
   renderTrend(data.daily);
   pie('deviceChart', data.devices, [C_TEAL, C_BLUE, C_PURPLE, C_ORANGE, C_GRAY]);
@@ -320,13 +376,28 @@ function render(data) {
 }
 
 function load() {
-  fetch('/api/dashboard?days=' + currentDays)
-    .then(function (r) { return r.json(); })
+  fetch('/api/dashboard?days=' + currentDays, { headers: { 'X-Dash-Token': getToken() } })
+    .then(function (r) {
+      if (r.status === 401) {
+        var err = new Error('unauthorized');
+        err.status = 401;
+        throw err;
+      }
+      return r.json();
+    })
     .then(render)
     .catch(function (e) {
-      document.getElementById('updated').textContent = '加载失败：' + e.message;
+      if (e.status === 401) {
+        showLogin(getToken() ? '密码错误，请重试' : '请输入访问密码');
+      } else {
+        document.getElementById('updated').textContent = '加载失败：' + e.message;
+      }
     });
 }
+
+document.getElementById('dashPass').addEventListener('keydown', function (ev) {
+  if (ev.key === 'Enter') doLogin();
+});
 
 document.querySelectorAll('.seg button').forEach(function (btn) {
   btn.addEventListener('click', function () {

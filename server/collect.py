@@ -19,6 +19,9 @@ DB_PATH = Path(os.environ.get("SOMA_DB", str(BASE_DIR / "soma_perf.db")))
 IP_SALT = os.environ.get("SOMA_IP_SALT", "soma-perf-change-me")
 SITE_TOKEN = os.environ.get("SOMA_SITE_TOKEN", "")
 MAX_BODY_BYTES = 256 * 1024
+DASH_PASSWORD = os.environ.get("SOMA_DASH_PASSWORD", "")
+SYNC_TOKEN = os.environ.get("SOMA_SYNC_TOKEN", "")
+PUBLIC_MODE = os.environ.get("SOMA_PUBLIC_MODE", "")
 
 UA_BOT_RE = re.compile(
     r"bot|crawl|spider|slurp|headless|phantom|curl|wget|python|java-|node|scrapy",
@@ -143,6 +146,21 @@ def rate_limited(ip: str, limit: int = 120, window: int = 60) -> bool:
     return False
 
 
+def dash_ok(request: Request) -> bool:
+    """看板访问校验：未设置密码时放行；设置后需携带 X-Dash-Token。"""
+    if not DASH_PASSWORD:
+        return True
+    return (
+        request.headers.get("x-dash-token") == DASH_PASSWORD
+        or request.query_params.get("token") == DASH_PASSWORD
+    )
+
+
+def public_only():
+    """Render 展示模式：只允许看板与同步接口，禁止采集与内部接口外露。"""
+    return PUBLIC_MODE == "dashboard"
+
+
 def save_events(events: list, ip: str) -> int:
     ip_hash = hash_ip(ip)
     now = int(__import__("time").time() * 1000)
@@ -208,6 +226,8 @@ async def ingest(payload, request: Request):
 
 @app.post("/collect")
 async def collect(request: Request):
+    if public_only():
+        return JSONResponse({"ok": False, "error": "not public"}, status_code=403)
     try:
         body = await request.body()
         if len(body) > MAX_BODY_BYTES:
@@ -221,6 +241,8 @@ async def collect(request: Request):
 @app.get("/collect")
 async def collect_get(data: str = "", request: Request = None):
     """sendBeacon 不可用时的 Image 兜底上报。"""
+    if public_only():
+        return JSONResponse({"ok": False, "error": "not public"}, status_code=403)
     if not data:
         return JSONResponse({"ok": False, "error": "missing data"}, status_code=400)
     if len(data.encode("utf-8")) > MAX_BODY_BYTES:
@@ -257,6 +279,8 @@ def query(sql: str, params: tuple = ()) -> list:
 
 @app.get("/api/overview")
 async def overview(days: int = 7):
+    if public_only():
+        return JSONResponse({"ok": False, "error": "not public"}, status_code=403)
     days = max(1, min(90, days))
     since_ms = int(__import__("time").time() * 1000) - days * 86400 * 1000
     rows = query(
@@ -307,6 +331,8 @@ async def overview(days: int = 7):
 
 @app.get("/api/recent")
 async def recent(limit: int = 20):
+    if public_only():
+        return JSONResponse({"ok": False, "error": "not public"}, status_code=403)
     limit = max(1, min(200, limit))
     rows = query(
         """
@@ -326,8 +352,10 @@ def _round(v, ndigits: int = 1):
 
 
 @app.get("/api/dashboard")
-async def dashboard_data(days: int = 7):
+async def dashboard_data(days: int = 7, request: Request = None):
     """看板聚合接口：一次返回全部图表所需数据。"""
+    if not dash_ok(request):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
     days = max(1, min(90, days))
     since_ms = int(time.time() * 1000) - days * 86400 * 1000
 
@@ -468,6 +496,71 @@ async def dashboard_data(days: int = 7):
         "topPages": [dict(r) for r in top_pages],
         "recent": [dict(r) for r in recent_rows],
     }
+
+
+def replace_all(events: list) -> int:
+    """Render 同步用：全量替换事件表（保留源端 id 与 ip_hash）。"""
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM events")
+        for ev in events:
+            cur.execute(
+                """
+                INSERT INTO events (
+                    id, site_id, event_type, ts, received_at, visitor_id, session_id,
+                    page, referrer, ua, device, os, browser, is_wechat, ua_bot,
+                    viewport, lang, ip_hash, bot_score, is_bot, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ev.get("id"),
+                    ev.get("site_id") or ev.get("siteId", "default"),
+                    ev.get("event_type") or ev.get("type", "unknown"),
+                    int(ev.get("ts") or 0),
+                    int(ev.get("received_at") or 0),
+                    ev.get("visitor_id") or ev.get("visitorId"),
+                    ev.get("session_id") or ev.get("sessionId"),
+                    ev.get("page"),
+                    ev.get("referrer"),
+                    ev.get("ua"),
+                    ev.get("device"),
+                    ev.get("os"),
+                    ev.get("browser"),
+                    1 if ev.get("is_wechat") else 0,
+                    1 if ev.get("ua_bot") else 0,
+                    ev.get("viewport"),
+                    ev.get("lang"),
+                    ev.get("ip_hash", ""),
+                    int(ev.get("bot_score") or compute_bot_score(ev)),
+                    1 if ev.get("is_bot") else 0,
+                    ev.get("payload_json") if isinstance(ev.get("payload_json"), str)
+                    else json.dumps(ev, ensure_ascii=False, default=str)[:4000],
+                ),
+            )
+        conn.commit()
+        return len(events)
+    finally:
+        conn.close()
+
+
+@app.post("/sync")
+async def sync(request: Request):
+    """ECS -> Render 数据同步接口（全量替换最近数据）。"""
+    if SYNC_TOKEN and request.headers.get("x-sync-token") != SYNC_TOKEN:
+        return JSONResponse({"ok": False, "error": "forbidden"}, status_code=403)
+    try:
+        body = await request.body()
+        if len(body) > 50 * 1024 * 1024:
+            return JSONResponse({"ok": False, "error": "payload too large"}, status_code=413)
+        payload = json.loads(body)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+    events = payload.get("events") if isinstance(payload, dict) else payload
+    if not isinstance(events, list) or not events:
+        return JSONResponse({"ok": False, "error": "empty"}, status_code=400)
+    n = replace_all(events)
+    return {"ok": True, "events": n}
 
 
 if __name__ == "__main__":

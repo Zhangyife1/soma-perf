@@ -233,3 +233,48 @@ git push -u origin main
 ```
 
 `.gitignore` 已排除本地数据库（`*.db`）、虚拟环境和缓存目录，不会把演示数据推上去。
+
+## 九、部署到 Render（供管理层手机/浏览器查看）
+
+方案：**数据源留在 ECS，Render 只做对外展示副本**。ECS 定时把数据推送到
+Render，管理层访问带密码的看板地址，不暴露 ECS 内部接口。
+
+### 1. Render 侧
+
+仓库推到 GitHub 后，在 Render 控制台选择 **New -> Blueprint**，关联仓库即可
+自动识别 `render.yaml` 创建服务；或手动创建 Web Service，把根目录设为
+`server/`，启动命令 `uvicorn collect:app --host 0.0.0.0 --port $PORT`。
+
+必须配置三个环境变量：
+
+| 变量 | 说明 |
+|---|---|
+| `SOMA_DASH_PASSWORD` | 管理层访问看板的密码 |
+| `SOMA_SYNC_TOKEN` | ECS 同步数据用的令牌（与看板密码不同） |
+| `SOMA_IP_SALT` | 随机字符串（保持与 ECS 一致可保留相同 IP 哈希） |
+
+`render.yaml` 已设置 `SOMA_PUBLIC_MODE=dashboard`，Render 上只开放看板、
+聚合接口和同步接口，采集接口与内部接口全部关闭。
+
+### 2. ECS 侧（宝塔计划任务）
+
+宝塔面板 -> 计划任务 -> 添加 Shell 脚本，每 5 分钟执行：
+
+```bash
+python3 /opt/perf-monitor/server/sync_to_render.py \
+  --url https://你的服务名.onrender.com \
+  --token <SOMA_SYNC_TOKEN> \
+  --days 90
+```
+
+### 3. 管理层访问
+
+手机/浏览器打开 `https://你的服务名.onrender.com/dashboard`，输入
+`SOMA_DASH_PASSWORD` 即可查看，看板已适配手机屏幕。
+
+### 注意事项
+
+- Render 免费实例无数据盘，重启后数据为空，但下一次 ECS 同步（5 分钟内）会自动
+  恢复；免费实例闲置 15 分钟会休眠，首次打开需等待冷启动（约 30-60 秒）。
+- `onrender.com` 在国内访问可能较慢或不稳定；如果管理层都在国内，更稳妥的
+  做法是在 ECS 上部署同一看板并用 Nginx 密码保护（可另行配置）。
