@@ -115,14 +115,9 @@ Top 页面与最近事件流，每 60 秒自动刷新。
 
 ## 一、把埋点脚本插入网站
 
-### 方式 1：新建脚本文件（推荐）
+### 方式：新建脚本文件
 
-1. 把 `sdk/soma-perf.js` 上传到网站服务器，例如：
-
-   ```text
-   /www/wwwroot/www.somaagent.com.cn/js/soma-perf.js
-   ```
-
+1. 把 `sdk/soma-perf.js` 上传到网站服务器
 2. 在网站每个页面的 `<head>` 中（越靠前越好）加入：
 
    ```html
@@ -134,37 +129,9 @@ Top 页面与最近事件流，每 60 秒自动刷新。
    });
    </script>
    ```
-
-### 方式 2：模板站 / 建站系统
-
-把上面两行加到全局头部模板，例如 WordPress 的 `header.php`、建站工具的「全局头部代码 / 自定义代码」设置，保证全站生效。
-
-### 方式 3：完全内联（不新增文件）
-
-把 `soma-perf.js` 压缩后直接放入 `<script>...</script>`，再在后面加 `window.SomaPerf.init(...)` 配置。
-
-> 提示：如果暂时没有 `monitor.somaagent.com.cn` 域名，可以先在本地测试（见下文「测试」）。
-
-## 二、部署采集服务（阿里云 ECS）
+## 二、部署采集服务
 
 采集服务是一个 FastAPI 应用，放在网站同一台 ECS 上即可。
-
-```bash
-cd perf-monitor/server
-pip install -r requirements.txt
-SOMA_IP_SALT=请改成随机长字符串 uvicorn collect:app --host 127.0.0.1 --port 8000
-```
-
-推荐用 systemd 守护进程，并把 `/collect` 反向代理到网站域名下（同源上报，不用处理跨域）：
-
-```nginx
-location /collect {
-    proxy_pass http://127.0.0.1:8000;
-    proxy_set_header X-Forwarded-For $remote_addr;
-    proxy_set_header X-Real-IP $remote_addr;
-}
-```
-
 然后给站点配上 HTTPS（如 certbot），埋点里把 endpoint 换成 `https://www.somaagent.com.cn/collect`。
 
 ## 三、验证是否收到数据
@@ -181,7 +148,6 @@ curl -X POST http://127.0.0.1:8000/collect \
 # 查看概览
 curl http://127.0.0.1:8000/api/overview?days=7
 ```
-
 用浏览器打开 `examples/test.html`，点击页面后到 `http://127.0.0.1:8000/api/recent` 能看到 click、page_exit 等事件。
 
 ## 四、接入 Nginx 日志（与埋点交叉验证）
@@ -214,27 +180,15 @@ python parse_nginx.py --log /var/log/nginx/access.log --since 2026-08-01 --out t
 - 建议在网站隐私政策中说明「使用匿名化的行为统计与性能监测数据」。
 - 数据默认保留在 ECS 本机 SQLite，后续可加保留周期清理任务。
 
-## 七、下一步（按需开发）
+## 七、按需开发
 
 1. 主动探测：Playwright 定时模拟 PC/手机/微信浏览器，输出多平台适配分。
 2. 告警：打开率骤降、卡顿率超标、服务器高负载时通知钉钉/企业微信。
 3. 周报：每周自动生成性能与访问报告。
 
-## 八、上传 GitHub
+## 八、push to Github
 
-```bash
-cd perf-monitor
-git init
-git add .
-git commit -m "feat: SomaPerf 网站实时性能与访问监测系统"
-git branch -M main
-git remote add origin https://github.com/你的用户名/soma-perf.git
-git push -u origin main
-```
-
-`.gitignore` 已排除本地数据库（`*.db`）、虚拟环境和缓存目录，不会把演示数据推上去。
-
-## 九、部署到 Render（供管理层手机/浏览器查看）
+## 九、Or 部署到 Render（手机/浏览器查看）
 
 方案：**数据源留在 ECS，Render 只做对外展示副本**。ECS 定时把数据推送到
 Render，管理层访问带密码的看板地址，不暴露 ECS 内部接口。
@@ -244,15 +198,6 @@ Render，管理层访问带密码的看板地址，不暴露 ECS 内部接口。
 仓库推到 GitHub 后，在 Render 控制台选择 **New -> Blueprint**，关联仓库即可
 自动识别 `render.yaml` 创建服务；或手动创建 Web Service，把根目录设为
 `server/`，启动命令 `uvicorn collect:app --host 0.0.0.0 --port $PORT`。
-
-必须配置三个环境变量：
-
-| 变量 | 说明 |
-|---|---|
-| `SOMA_DASH_PASSWORD` | 管理层访问看板的密码 |
-| `SOMA_SYNC_TOKEN` | ECS 同步数据用的令牌（与看板密码不同） |
-| `SOMA_IP_SALT` | 随机字符串（保持与 ECS 一致可保留相同 IP 哈希） |
-
 `render.yaml` 已设置 `SOMA_PUBLIC_MODE=dashboard`，Render 上只开放看板、
 聚合接口和同步接口，采集接口与内部接口全部关闭。
 
@@ -266,11 +211,6 @@ python3 /opt/perf-monitor/server/sync_to_render.py \
   --token <SOMA_SYNC_TOKEN> \
   --days 90
 ```
-
-### 3. 管理层访问
-
-手机/浏览器打开 `https://你的服务名.onrender.com/dashboard`，输入
-`SOMA_DASH_PASSWORD` 即可查看，看板已适配手机屏幕。
 
 ### 注意事项
 
